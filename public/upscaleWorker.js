@@ -40,8 +40,10 @@ function tensorToImageData(tensor, width, height) {
 async function initializeSessions(needsFaceRestoration) {
   if (!enhanceSession) {
     try {
-      // Prioritize WebGPU for massive speed improvements
-      enhanceSession = await self.ort.InferenceSession.create("/models/upscale_enhance.onnx", {
+      // Pointing to your Hugging Face CDN for the upscale model
+      const upscaleModelUrl = "https://huggingface.co/zacharyhavers/crisp-local-models/resolve/main/upscale_enhance.onnx";
+      
+      enhanceSession = await self.ort.InferenceSession.create(upscaleModelUrl, {
         executionProviders: ["webgpu", "webgl", "wasm"],
       });
     } catch (error) {
@@ -52,7 +54,10 @@ async function initializeSessions(needsFaceRestoration) {
 
   if (needsFaceRestoration && !faceRestorationSession) {
     try {
-      faceRestorationSession = await self.ort.InferenceSession.create("/models/face_restoration.onnx", {
+      // Pointing to your Hugging Face CDN for the face restoration model
+      const faceModelUrl = "https://huggingface.co/zacharyhavers/crisp-local-models/resolve/main/face_restoration.onnx";
+
+      faceRestorationSession = await self.ort.InferenceSession.create(faceModelUrl, {
         executionProviders: ["webgpu", "webgl", "wasm"],
       });
     } catch (error) {
@@ -133,7 +138,6 @@ self.onmessage = async (event) => {
 
       const finalBlendedData = masterCtx.getImageData(0, 0, outputImageData.width, outputImageData.height);
       
-      // Use Transferable Object to send memory back instantly
       self.postMessage({
         type: "facesRestored",
         imageData: finalBlendedData,
@@ -232,7 +236,6 @@ self.onmessage = async (event) => {
 
       const finalImageData = upscaledCtx.getImageData(0, 0, upscaledWidth, upscaledHeight);
       
-      // Transfer memory back instantly
       self.postMessage({
         type: "complete",
         imageData: finalImageData,
