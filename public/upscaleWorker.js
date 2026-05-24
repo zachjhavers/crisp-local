@@ -1,11 +1,19 @@
-importScripts("https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/ort.wasm.js");
+importScripts("https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/ort.all.min.js");
 
 let enhanceSession = null;
 let faceRestorationSession = null;
 
+// Configure ONNX Runtime for stable, single-threaded web execution
 self.ort = self.ort || {};
 self.ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/";
-self.ort.env.wasm.numThreads = 2;
+self.ort.env.wasm.numThreads = 1; // Safely bypasses crossOriginIsolated browser locks
+
+// Removed "webgpu" and "webgl" to prevent the VerifyEachNodeIsAssignedToAnEp crash
+const sessionOptions = {
+  executionProviders: ["wasm"],
+  graphOptimizationLevel: "all",
+  executionMode: "sequential"
+};
 
 function imageDataToTensor(imageData) {
   const { data, width, height } = imageData;
@@ -40,12 +48,8 @@ function tensorToImageData(tensor, width, height) {
 async function initializeSessions(needsFaceRestoration) {
   if (!enhanceSession) {
     try {
-      // Pointing to your Hugging Face CDN for the upscale model
       const upscaleModelUrl = "https://huggingface.co/zacharyhavers/crisp-local-models/resolve/main/upscale_enhance.onnx";
-      
-      enhanceSession = await self.ort.InferenceSession.create(upscaleModelUrl, {
-        executionProviders: ["webgpu", "webgl", "wasm"],
-      });
+      enhanceSession = await self.ort.InferenceSession.create(upscaleModelUrl, sessionOptions);
     } catch (error) {
       console.error("Failed to initialize enhancement session:", error);
       throw error;
@@ -54,12 +58,8 @@ async function initializeSessions(needsFaceRestoration) {
 
   if (needsFaceRestoration && !faceRestorationSession) {
     try {
-      // Pointing to your Hugging Face CDN for the face restoration model
       const faceModelUrl = "https://huggingface.co/zacharyhavers/crisp-local-models/resolve/main/face_restoration.onnx";
-
-      faceRestorationSession = await self.ort.InferenceSession.create(faceModelUrl, {
-        executionProviders: ["webgpu", "webgl", "wasm"],
-      });
+      faceRestorationSession = await self.ort.InferenceSession.create(faceModelUrl, sessionOptions);
     } catch (error) {
       console.error("Failed to initialize face restoration session:", error);
       throw error;
@@ -106,7 +106,32 @@ self.onmessage = async (event) => {
         const restoredFaceTensor = faceOutputs[faceOutputName];
         const restoredFaceData = tensorToImageData(restoredFaceTensor, 512, 512);
 
-        faceCtx.putImageData(restoredFaceData, 0, 0);
+        // --- ANTI-PLASTIC FIX START ---
+
+        // 1. Inject Micro-Grain into the AI Output
+        const pixels = restoredFaceData.data;
+        const noiseIntensity = 10; // Adjust between 5-15. Higher = more skin texture.
+        for (let j = 0; j < pixels.length; j += 4) {
+          const noise = (Math.random() - 0.5) * 2 * noiseIntensity;
+          pixels[j] = Math.min(255, Math.max(0, pixels[j] + noise));     // R
+          pixels[j+1] = Math.min(255, Math.max(0, pixels[j+1] + noise)); // G
+          pixels[j+2] = Math.min(255, Math.max(0, pixels[j+2] + noise)); // B
+        }
+
+        // 2. Put the original (blurry/noisy) face data down first
+        faceCtx.putImageData(extractedFaceData, 0, 0);
+
+        // 3. Create a temporary canvas for the grainy AI-restored face
+        const aiCanvas = new OffscreenCanvas(512, 512);
+        const aiCtx = aiCanvas.getContext("2d");
+        aiCtx.putImageData(restoredFaceData, 0, 0);
+
+        // 4. Blend the AI face over the original texture
+        faceCtx.globalAlpha = 0.85; // 85% AI smoothness, 15% original skin geometry
+        faceCtx.drawImage(aiCanvas, 0, 0);
+        faceCtx.globalAlpha = 1.0; // Reset alpha for the masking step
+
+        // --- ANTI-PLASTIC FIX END ---
 
         maskCtx.clearRect(0, 0, 512, 512);
         const radiusCenter = 256;
@@ -234,7 +259,12 @@ self.onmessage = async (event) => {
         }
       }
 
-      const finalImageData = upscaledCtx.getImageData(0, 0, upscaledWidth, upscaledHeight);
+      const finalCanvas = new OffscreenCanvas(upscaledWidth, upscaledHeight);
+      const finalCtx = finalCanvas.getContext("2d");
+      finalCtx.filter = "contrast(1.05) saturate(1.10) brightness(1.02)";
+      finalCtx.drawImage(offscreenCanvas, 0, 0);
+
+      const finalImageData = finalCtx.getImageData(0, 0, upscaledWidth, upscaledHeight);
       
       self.postMessage({
         type: "complete",
